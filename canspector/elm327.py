@@ -85,6 +85,83 @@ class ELM327:
                     yield text
 
 
+COMMON_ELM_BAUDS = [38400, 9600, 115200, 230400, 57600, 500000]
+SLCAN_PROBE_BAUDS = [115200, 230400, 1000000, 2000000]
+
+
+class AdapterNotFoundError(ELM327Error):
+    pass
+
+
+class SLCANAdapterDetected(ELM327Error):
+    def __init__(self, baud: int):
+        self.baud = baud
+        super().__init__(
+            f"SLCAN protokolü konuşan bir adaptör bulundu ({baud} baud) — "
+            "canspector şu an sadece ELM327 uyumlu adaptörleri destekliyor."
+        )
+
+
+def _try_elm_at_baud(port: str, baud: int) -> str | None:
+    try:
+        ser = serial.Serial(port, baudrate=baud, timeout=1.0)
+        time.sleep(0.3)
+        ser.reset_input_buffer()
+        ser.write(b"ATI\r")
+        time.sleep(0.4)
+        raw = ser.read(64)
+        ser.close()
+    except serial.SerialException:
+        return None
+    text = raw.decode("ascii", errors="replace")
+    if any(tag in text.upper() for tag in ("ELM", "OBD", "STN")):
+        return text.strip(" \r\n>")
+    return None
+
+
+def _try_slcan_at_baud(port: str, baud: int) -> str | None:
+    try:
+        ser = serial.Serial(port, baudrate=baud, timeout=1.0)
+        time.sleep(0.3)
+        ser.reset_input_buffer()
+        ser.write(b"V\r")
+        time.sleep(0.4)
+        raw = ser.read(32)
+        ser.close()
+    except serial.SerialException:
+        return None
+    if raw[:1] == b"V" and len(raw) > 1:
+        return raw.decode("ascii", errors="replace").strip()
+    return None
+
+
+def autodetect_connect(port: str, protocol: str = "0") -> tuple["ELM327", str, int]:
+    """Probe common baud rates to find a working ELM327-compatible adapter
+    on `port`, without needing to know its exact model/chip beforehand.
+
+    Returns (connected+initialized ELM327 instance, identity string, baud).
+    Raises SLCANAdapterDetected if an SLCAN-protocol device answers instead
+    (different hardware family, not supported here), or AdapterNotFoundError
+    if nothing on the port answers either protocol.
+    """
+    for baud in COMMON_ELM_BAUDS:
+        identity = _try_elm_at_baud(port, baud)
+        if identity:
+            elm = ELM327(port, baudrate=baud)
+            elm.connect()
+            elm.initialize(protocol=protocol)
+            return elm, identity, baud
+
+    for baud in SLCAN_PROBE_BAUDS:
+        version = _try_slcan_at_baud(port, baud)
+        if version:
+            raise SLCANAdapterDetected(baud)
+
+    raise AdapterNotFoundError(
+        f"{port} üzerinde ELM327 ya da SLCAN protokolü konuşan bir cihaz bulunamadı."
+    )
+
+
 def parse_monitor_line(line: str):
     """Parse one ATMA output line into (can_id: int, data: bytes).
     Expected format with ATH1+ATS1: '7E8 04 41 04 00 00 00 00 00'

@@ -9,7 +9,7 @@ from rich.text import Text
 from canspector.busstate import BusState
 from canspector.decoder import Decoder
 from canspector.diffscan import DiffSession
-from canspector.elm327 import ELM327, parse_monitor_line
+from canspector.elm327 import ELM327, autodetect_connect, parse_monitor_line
 from canspector.logger import FrameLogger, load_log
 
 console = Console()
@@ -71,16 +71,26 @@ def _reader_thread(elm: ELM327, bus_state: BusState, logger: FrameLogger | None,
             logger.log(can_id, data)
 
 
-def run_monitor(port: str, protocol: str, dbc_path: str | None, log_path: str | None, refresh_hz: float = 4.0):
+def _connect(port: str, protocol: str, autodetect: bool) -> ELM327:
+    if autodetect:
+        elm, identity, baud = autodetect_connect(port, protocol=protocol)
+        console.print(f"[green]Bulundu:[/] {identity} ({baud} baud)")
+        return elm
+    elm = ELM327(port)
+    elm.connect()
+    console.print(f"[green]Bağlandı:[/] {elm.command('ATI')}")
+    elm.initialize(protocol=protocol)
+    return elm
+
+
+def run_monitor(port: str, protocol: str, dbc_path: str | None, log_path: str | None,
+                 autodetect: bool = False, refresh_hz: float = 4.0):
     bus_state = BusState()
     decoder = Decoder(dbc_path)
     logger = FrameLogger(log_path) if log_path else None
     stop_event = threading.Event()
 
-    elm = ELM327(port)
-    elm.connect()
-    console.print(f"[green]Bağlandı:[/] {elm.command('ATI')}")
-    elm.initialize(protocol=protocol)
+    elm = _connect(port, protocol, autodetect)
     elm.start_monitor()
 
     thread = threading.Thread(target=_reader_thread, args=(elm, bus_state, logger, stop_event), daemon=True)
@@ -123,15 +133,12 @@ def _diff_table(results, decoder: Decoder) -> Table:
     return table
 
 
-def run_diff(port: str, protocol: str, dbc_path: str | None):
+def run_diff(port: str, protocol: str, dbc_path: str | None, autodetect: bool = False):
     bus_state = BusState()
     decoder = Decoder(dbc_path)
     stop_event = threading.Event()
 
-    elm = ELM327(port)
-    elm.connect()
-    console.print(f"[green]Bağlandı:[/] {elm.command('ATI')}")
-    elm.initialize(protocol=protocol)
+    elm = _connect(port, protocol, autodetect)
     elm.start_monitor()
 
     thread = threading.Thread(target=_reader_thread, args=(elm, bus_state, None, stop_event), daemon=True)
